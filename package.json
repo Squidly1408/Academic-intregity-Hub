@@ -1,0 +1,23 @@
+{
+  "name": "academic-integrity-hub",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web \"npm run dev --workspace @aih/api\" \"npm run dev --workspace @aih/web\"",
+    "build": "npm run build --workspaces",
+    "start": "npm run start --workspace @aih/api",
+    "typecheck": "npm run typecheck --workspaces",
+    "clean": "rimraf apps/*/dist apps/*/node_modules packages/*/dist node_modules"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "rimraf": "^6.0.1"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

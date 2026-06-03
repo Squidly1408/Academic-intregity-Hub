@@ -1,0 +1,22 @@
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    ports:
+      - "8787:8787"
+    environment:
+      API_PORT: 8787
+      CLIENT_ORIGIN: http://localhost:5173
+    volumes:
+      - ./.env:/app/.env:ro
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8787
+    depends_on:
+      - api
