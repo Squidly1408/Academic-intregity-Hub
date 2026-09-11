@@ -1,32 +1,33 @@
-import type { JobPayload } from "./types";
+import { extractText } from "./extract";
+import { runAnalysis } from "./analysis";
+import type { AnalysisProgress, AnalysisResult } from "./types";
 
-const baseUrl = import.meta.env.VITE_API_URL ?? "http://localhost:8787";
+/**
+ * The whole analysis pipeline runs locally in the browser — there is no
+ * server. Files are read and parsed on-device; the only network calls are
+ * the targeted, key-less public API lookups inside `runAnalysis` (grammar
+ * and citation verification), each of which fails open to a local-only
+ * result if unreachable.
+ */
+export async function runAnalysisPipeline(files: File[], language: string, onProgress: (progress: AnalysisProgress) => void): Promise<AnalysisResult> {
+  const extracted: Array<{ name: string; extractedText: string }> = [];
 
-export async function startAnalysis(files: File[], mode: "single" | "compare", language: string): Promise<JobPayload> {
-  const formData = new FormData();
-  files.forEach((file) => formData.append("files", file));
-  formData.append("mode", mode);
-  formData.append("language", language);
-
-  const response = await fetch(`${baseUrl}/api/analyze`, { method: "POST", body: formData });
-  if (!response.ok) {
-    const data = (await response.json().catch(() => ({}))) as { error?: string };
-    throw new Error(data.error ?? "Analysis request failed");
+  for (let index = 0; index < files.length; index += 1) {
+    const file = files[index];
+    onProgress({
+      stage: "extracting",
+      progress: Math.round((index / files.length) * 45),
+      message: `Reading ${file.name}…`
+    });
+    const extractedText = await extractText(file);
+    extracted.push({ name: file.name, extractedText });
   }
 
-  const data = (await response.json()) as { job: JobPayload };
-  return data.job;
-}
+  onProgress({ stage: "analyzing", progress: 55, message: "Running detection and verification checks…" });
 
-export async function loadJob(jobId: string): Promise<JobPayload> {
-  const response = await fetch(`${baseUrl}/api/jobs/${jobId}`);
-  if (!response.ok) {
-    throw new Error("Job not found");
-  }
-  const data = (await response.json()) as { job: JobPayload };
-  return data.job;
-}
+  const result = await runAnalysis({ files: extracted, language });
 
-export function reportUrl(jobId: string, format: "html" | "pdf" | "docx"): string {
-  return `${baseUrl}/api/reports/${jobId}?format=${format}`;
+  onProgress({ stage: "done", progress: 100, message: "Report ready." });
+
+  return result;
 }

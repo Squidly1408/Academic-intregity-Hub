@@ -6,33 +6,43 @@ export interface ProviderResult {
   evidence: string;
 }
 
+export type HighlightSeverity = "info" | "low" | "medium" | "high";
+
+export interface HighlightRange {
+  start: number;
+  end: number;
+  category: string;
+  severity: HighlightSeverity;
+  label: string;
+  suggestion?: string;
+}
+
 export interface AnalysisResult {
   overallScore: number;
   integrityRating: string;
-  ai: { score: number; summary: string; providers: ProviderResult[] };
-  plagiarism: { score: number; summary: string; sources: Array<{ title: string; url: string; similarity: number }> };
-  citations: { score: number; summary: string; citations: Array<{ raw: string; matched: boolean; issue?: string }> };
-  writing: { score: number; summary: string; suggestions: string[] };
-  sourceVerification: { score: number; summary: string; matches: Array<{ provider: string; title: string; url: string; score: number; query: string; matched: boolean }> };
-  styleConsistency: { score: number; summary: string };
-  quoteIntegrity: { score: number; summary: string };
-  readability: { score: number; summary: string };
-  tone: { score: number; summary: string };
-  hallucination: { score: number; summary: string };
-  paraphrasing: { score: number; summary: string };
-  sourceComparison: { score: number; summary: string; comparedAgainst: string[] };
+  /** Sanitized primary-document text that every HighlightRange offset below is measured against. */
+  documentText: string;
+  ai: { score: number; summary: string; findings: HighlightRange[]; providers: ProviderResult[] };
+  plagiarism: { score: number; summary: string; findings: HighlightRange[]; sources: Array<{ title: string; url: string; similarity: number }> };
+  citations: { score: number; summary: string; findings: HighlightRange[]; citations: Array<{ raw: string; matched: boolean; issue?: string }> };
+  writing: { score: number; summary: string; findings: HighlightRange[] };
+  sourceVerification: { score: number; summary: string; findings: HighlightRange[]; matches: Array<{ provider: string; title: string; url: string; score: number; query: string; matched: boolean }> };
+  styleConsistency: { score: number; summary: string; findings: HighlightRange[] };
+  quoteIntegrity: { score: number; summary: string; findings: HighlightRange[] };
+  readability: { score: number; summary: string; findings: HighlightRange[] };
+  tone: { score: number; summary: string; findings: HighlightRange[] };
+  hallucination: { score: number; summary: string; findings: HighlightRange[] };
+  paraphrasing: { score: number; summary: string; findings: HighlightRange[] };
+  sourceComparison: { score: number; summary: string; findings: HighlightRange[]; comparedAgainst: string[] };
   suggestions: string[];
   modules: Array<{ key: string; label: string; score: number; summary: string; category: "risk" | "quality" | "verification" }>;
   apiCoverage: Array<{ name: string; purpose: string; status: "live" | "fallback" | "mixed"; summary: string }>;
   charts: { labels: string[]; scores: number[] };
 }
 
-export interface JobPayload {
-  id: string;
-  status: "queued" | "processing" | "completed" | "failed";
+/** Local progress state for the in-browser analysis pipeline — there's no server job to poll. */
+export interface AnalysisProgress {
+  stage: "extracting" | "analyzing" | "done";
   progress: number;
   message: string;
-  result?: AnalysisResult;
-  error?: string;
-  fileCount: number;
 }

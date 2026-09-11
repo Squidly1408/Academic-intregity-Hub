@@ -4,17 +4,11 @@ module.exports = {
   theme: {
     extend: {
       fontFamily: {
-        sans: ["Inter", "ui-sans-serif", "system-ui"]
+        sans: ["Inter", "ui-sans-serif", "system-ui"],
+        serif: ["\"Source Serif 4\"", "ui-serif", "Georgia", "serif"]
       },
       boxShadow: {
-        soft: "0 20px 60px rgba(2, 8, 23, 0.35)"
-      },
-      colors: {
-        ink: {
-          950: "#04111f",
-          900: "#081425",
-          800: "#10213c"
-        }
+        soft: "0 1px 2px rgba(28, 25, 20, 0.04), 0 10px 28px rgba(28, 25, 20, 0.06)"
       }
     }
   },

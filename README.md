@@ -1,59 +1,85 @@
-# Academic Integrity Hub
+<p align="center">
+  <img src="assets/github/banner.png" alt="Academic Integrity Hub" width="640" />
+</p>
 
-Academic Integrity Hub is a free-to-use, no-login, privacy-first academic analysis platform. Users upload documents directly on the homepage and receive an immediate integrity report that combines AI detection, plagiarism heuristics, citation checks, writing analysis, OCR extraction, and exportable reports.
+<p align="center">A free, no-login, no-server academic document review: AI-detection likelihood, plagiarism heuristics, citation verification, and writing analysis, all computed in your browser.</p>
+
+<p align="center"><a href="https://academic-integrity-hub.web.app"><strong>academic-integrity-hub.web.app</strong></a></p>
+
+---
+
+## What it is
+
+Upload a document and Academic Integrity Hub walks it through three steps — **Upload → Analyze → Report** — combining several detection
+signals into a single, exportable review:
+
+- **AI-likelihood detection** from local structural-language signals (lexical variety, repetition, sentence rhythm, transition density) —
+  computed entirely on your device, nothing is sent anywhere for this check
+- **Plagiarism heuristics**: internal repetition analysis, and cross-document comparison when you upload more than one file
+- **Grammar & style** via the public LanguageTool API plus structural sentence checks
+- **Citation & source verification** against the public Crossref, OpenAlex, and Semantic Scholar catalogs
+- **Style integrity**: burstiness, repetition, quote attribution, paraphrase drift
+- A **highlighted copy of your document** with AI-style phrasing and possible plagiarism marked inline
+- **HTML, PDF, and DOCX** report export — generated and downloaded on your device
+
+No account, login, or payment is required. **There is no backend.** Your document is read, parsed (including PDF/DOCX/RTF/image-OCR
+extraction), and scored entirely in your browser; the only network calls are the targeted, key-less lookups to the public APIs above,
+each of which fails open to a local-only result if it's unreachable. See the in-app
+[Privacy Policy](https://academic-integrity-hub.web.app/#/privacy) for details.
 
 ## Stack
 
-- Frontend: React, Vite, TypeScript, TailwindCSS, Framer Motion, Recharts
-- Backend: Node.js, Express, TypeScript, Socket.IO
-- Processing: In-memory queue with parallel analysis and provider fallback logic
-- Export: HTML, PDF, and DOCX
-- Deployment: Docker-ready for containerized hosting
+| Layer | Tech |
+|---|---|
+| Frontend | React 19, Vite, TypeScript, Tailwind CSS, Framer Motion, Recharts |
+| Text extraction | pdfjs-dist (PDF), mammoth (DOCX), tesseract.js (image OCR), all running client-side |
+| Report export | jsPDF, docx, and a plain HTML template — generated client-side and downloaded directly |
+| Hosting | Firebase Hosting — a static site, no server to run or pay for |
 
-## Run Locally
+## Project structure
 
-1. Install dependencies:
-
-```bash
-npm install
+```
+apps/
+  web/   The app — everything above lives here
+  api/   Legacy Express + Socket.IO backend, unused by the deployed site (see "About apps/api" below)
 ```
 
-2. Start the full app:
+## Run locally
 
 ```bash
-npm run dev
+npm install                     # installs workspaces from the repo root
+npm run dev --workspace @aih/web
 ```
 
-3. Open the frontend at the Vite URL shown in the terminal.
+Open the Vite URL printed in the terminal — that's the whole app, no other process required.
 
-The API runs on port `8787` and the web app runs on port `5173` by default.
-
-## Environment
-
-Copy `.env.example` to `.env` if you want to configure optional provider keys.
-
-The app works without external API keys by falling back to local heuristics, so it remains usable out of the box.
-
-## Features
-
-- Drag-and-drop upload from the landing page
-- PDF, DOCX, TXT, RTF, and image OCR support
-- Parallel analysis providers with graceful fallback
-- Real-time job progress via WebSocket
-- Integrity dashboard with charts and recommendation cards
-- HTML, PDF, and DOCX report export
-- No account, login, password, or subscription required
-
-## Docker
-
-Build and run with Docker Compose:
+## Deployment
 
 ```bash
-docker compose up --build
+npm run build --workspace @aih/web
+firebase deploy --only hosting
 ```
+
+`firebase.json` and `.firebaserc` are already set up for this — `firebase.json` points at `apps/web/dist` and rewrites everything to
+`index.html` for client-side routing.
+
+## About `apps/api`
+
+This app used to run its analysis on a server (`apps/api`, an Express + Socket.IO backend). It's still in the repo but the deployed
+frontend no longer calls it — every check that server used to run now runs client-side instead (see `apps/web/src/lib/analysis.ts`,
+`extract.ts`, and `report.ts`). The one thing a server made possible that the browser can't do safely is call paid AI-detection APIs
+(Copyleaks, GPTZero, etc.) with a secret key — there's nowhere to hide a key in code that ships to every visitor, so those integrations
+aren't used; AI-likelihood is local heuristics only, shown transparently as a signal breakdown rather than a vendor verdict. If you don't
+need `apps/api`, it's safe to delete.
+
+## Legal
+
+In-app Privacy Policy and Terms & Conditions live at `#/privacy` and `#/terms` (see
+[`apps/web/src/components/legal`](apps/web/src/components/legal)). They're templates describing how this codebase is built to handle
+data — have them reviewed before relying on them for a public, commercial deployment.
 
 ## Notes
 
-- Uploads are handled in memory and are not persisted by default.
-- Real third-party provider integrations are enabled by environment variables.
-- The local analyzers are deterministic so the app remains functional without paid services.
+- Nothing about your document is stored anywhere — closing the tab clears it, because there's no server for it to persist on.
+- The local analyzers are deterministic, so results are reproducible.
+- Site analytics (Google Analytics) measure traffic only, never document contents.

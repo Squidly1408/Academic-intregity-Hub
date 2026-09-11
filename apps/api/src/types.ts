@@ -31,6 +31,8 @@ export interface SectionResult {
 export interface AnalysisResult {
   overallScore: number;
   integrityRating: string;
+  /** Sanitized primary-document text that every HighlightRange offset below is measured against. */
+  documentText: string;
   ai: SectionResult & { providers: ProviderResult[] };
   plagiarism: SectionResult & { sources: Array<{ title: string; url: string; similarity: number }> };
   citations: SectionResult & { citations: Array<{ raw: string; matched: boolean; issue?: string }> };

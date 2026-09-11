@@ -7,12 +7,16 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "docx": "^9.7.1",
     "framer-motion": "^12.10.3",
+    "jspdf": "^4.2.1",
+    "mammoth": "^1.12.2",
+    "pdfjs-dist": "^4.9.155",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-dropzone": "^14.3.8",
     "recharts": "^2.15.4",
-    "socket.io-client": "^4.8.1"
+    "tesseract.js": "^7.0.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.3",

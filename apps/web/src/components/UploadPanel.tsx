@@ -46,35 +46,34 @@ export function UploadPanel({ onSelect, isProcessing }: UploadPanelProps) {
     <div className="space-y-3">
       <div
         {...getRootProps()}
-        className={`group relative cursor-pointer overflow-hidden rounded-[2rem] border border-dashed px-6 py-9 text-center transition-all duration-300 sm:text-left ${
+        className={`group relative cursor-pointer rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors duration-200 sm:text-left ${
           isDragReject
             ? "border-[var(--bad-border)] bg-[var(--bad-bg)]"
             : isDragActive
-              ? "scale-[1.01] border-[var(--accent)] bg-[var(--accent-soft-bg)]"
-              : "border-[var(--border-strong)] bg-[var(--surface-3)] hover:border-[var(--accent-soft-border)] hover:bg-[var(--surface-4)]"
+              ? "border-[var(--accent)] bg-[var(--accent-soft-bg)]"
+              : "border-[var(--border-strong)] bg-[var(--surface-muted)] hover:border-[var(--accent-soft-border)] hover:bg-[var(--surface-hover)]"
         } ${isProcessing ? "pointer-events-none opacity-50" : ""}`}
         aria-disabled={isProcessing}
       >
         <input {...getInputProps()} aria-label="Upload documents for analysis" />
         <div className="flex flex-col items-center gap-4 sm:flex-row sm:items-center">
           <div
-            className={`grid h-14 w-14 shrink-0 place-items-center rounded-2xl border transition-transform duration-300 ${
-              isDragActive ? "scale-110 border-[var(--accent-soft-border)] bg-[var(--accent-soft-bg)] text-[var(--accent-text)]" : "border-[var(--border)] bg-[var(--surface-4)] text-[var(--accent-text)] group-hover:scale-105"
+            className={`grid h-14 w-14 shrink-0 place-items-center rounded-xl border transition-transform duration-200 ${
+              isDragActive ? "scale-105 border-[var(--accent-soft-border)] bg-[var(--surface)] text-[var(--accent-text)]" : "border-[var(--border)] bg-[var(--surface)] text-[var(--accent-text)]"
             }`}
           >
             <UploadCloudIcon className="h-6 w-6" />
           </div>
           <div className="flex flex-col gap-2">
-            <div className="text-xs uppercase tracking-[0.24em] text-[var(--accent-text)]">Upload documents</div>
             <div className="text-xl font-semibold text-[var(--text-primary)] sm:text-2xl">
               {isDragActive ? "Drop it right here" : "Drag files in, or click to browse"}
             </div>
             <div className="max-w-2xl text-sm leading-6 text-[var(--text-muted)]">
-              Analyze academic writing instantly with plagiarism, citation, AI detection, readability, and source comparison in one workflow.
+              Analyze academic writing for AI phrasing, plagiarism, citation issues, and writing quality — all in one pass.
             </div>
             <div className="mt-1 flex flex-wrap justify-center gap-1.5 sm:justify-start">
               {ACCEPTED_LABELS.map((label) => (
-                <span key={label} className="chip rounded-full px-2.5 py-1 text-[0.65rem] uppercase tracking-[0.14em] text-[var(--text-faint)]">
+                <span key={label} className="rounded border border-[var(--border)] bg-[var(--surface)] px-2 py-0.5 text-[0.65rem] uppercase tracking-[0.1em] text-[var(--text-faint)]">
                   {label}
                 </span>
               ))}
@@ -84,7 +83,9 @@ export function UploadPanel({ onSelect, isProcessing }: UploadPanelProps) {
       </div>
 
       {rejectionMessage ? (
-        <div className="rounded-2xl border border-[var(--bad-border)] bg-[var(--bad-bg)] px-4 py-2.5 text-sm text-[var(--bad)]">{rejectionMessage}</div>
+        <div role="alert" className="rounded-lg border border-[var(--bad-border)] bg-[var(--bad-bg)] px-4 py-2.5 text-sm text-[var(--bad)]">
+          {rejectionMessage}
+        </div>
       ) : null}
     </div>
   );

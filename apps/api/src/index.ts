@@ -1,6 +1,7 @@
 import { createApp } from "./app";
 
-const port = Number(process.env.API_PORT ?? 8787);
+// Cloud Run (and most container platforms) inject PORT; API_PORT stays for local dev overrides.
+const port = Number(process.env.PORT ?? process.env.API_PORT ?? 8787);
 const { server } = createApp();
 
 server.listen(port, () => {

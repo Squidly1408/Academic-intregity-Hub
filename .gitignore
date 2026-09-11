@@ -9,3 +9,4 @@ coverage
 apps/*/dist
 apps/*/.vite
 packages/*/dist
+.firebase

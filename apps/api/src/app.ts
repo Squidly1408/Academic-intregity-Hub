@@ -10,18 +10,22 @@ import { getJob } from "./lib/store";
 
 dotenv.config();
 
+// CLIENT_ORIGIN may be a single origin or a comma-separated list (e.g. both
+// Firebase Hosting domains plus a local dev origin).
+const allowedOrigins = (process.env.CLIENT_ORIGIN ?? "http://localhost:5173").split(",").map((origin) => origin.trim());
+
 export function createApp() {
   const app = express();
   const server = http.createServer(app);
   const io = new Server(server, {
     cors: {
-      origin: process.env.CLIENT_ORIGIN ?? "http://localhost:5173"
+      origin: allowedOrigins
     }
   });
   const queue = new AnalysisQueue(Number(process.env.JOB_CONCURRENCY ?? 2));
   const maxUploadBytes = Number(process.env.MAX_UPLOAD_MB ?? 20) * 1024 * 1024;
 
-  app.use(cors({ origin: process.env.CLIENT_ORIGIN ?? "http://localhost:5173" }));
+  app.use(cors({ origin: allowedOrigins }));
   app.use(express.json({ limit: "2mb" }));
   app.use(rateLimit({ windowMs: 60_000, limit: 30 }));
 

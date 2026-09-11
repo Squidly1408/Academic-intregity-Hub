@@ -1,4 +1,4 @@
-import type { AnalysisResult, HighlightRange, ProviderResult, UploadedFileInfo } from "../types";
+import type { AnalysisResult, HighlightRange, ProviderResult } from "./types";
 import {
   chunkText,
   coefficientOfVariation,
@@ -12,16 +12,19 @@ import {
   wordNgrams
 } from "./text";
 
-interface AnalysisInput {
-  files: UploadedFileInfo[];
-  language: string;
-}
+/**
+ * Everything in this module runs entirely in the browser. There is no server:
+ * document text never leaves the machine except in the specific, targeted
+ * requests below to public, no-key APIs (LanguageTool, Crossref, OpenAlex,
+ * Semantic Scholar) that don't require — and never see — a secret credential.
+ * AI-likelihood is a local, transparent heuristic; there's no way to safely
+ * hold a paid detector's API key in code that ships to every visitor's
+ * browser, so this app doesn't pretend to call one.
+ */
 
-interface ProviderDescriptor {
-  name: string;
-  envUrl: string;
-  envKey: string;
-  weight: number;
+interface AnalysisInput {
+  files: Array<{ name: string; extractedText: string }>;
+  language: string;
 }
 
 interface CatalogHit {
@@ -32,14 +35,6 @@ interface CatalogHit {
   query: string;
   matched: boolean;
 }
-
-const aiProviders: ProviderDescriptor[] = [
-  { name: "Copyleaks", envUrl: "COPYLEAKS_BASE_URL", envKey: "COPYLEAKS_API_KEY", weight: 0.28 },
-  { name: "GPTZero", envUrl: "GPTZERO_BASE_URL", envKey: "GPTZERO_API_KEY", weight: 0.18 },
-  { name: "Winston AI", envUrl: "WINSTON_BASE_URL", envKey: "WINSTON_API_KEY", weight: 0.2 },
-  { name: "Originality.ai", envUrl: "ORIGINALITY_BASE_URL", envKey: "ORIGINALITY_API_KEY", weight: 0.2 },
-  { name: "ZeroGPT", envUrl: "ZEROGPT_BASE_URL", envKey: "ZEROGPT_API_KEY", weight: 0.14 }
-];
 
 function clampScore(value: number): number {
   return Math.max(0, Math.min(100, Number(value.toFixed(1))));
@@ -127,14 +122,16 @@ async function fetchJson(url: string, options?: RequestInit): Promise<any | null
     }
     return response.json();
   } catch {
+    // network blocked, CORS denied, or offline — callers treat this as "no data" and fall back gracefully
     return null;
   }
 }
 
-async function reviewGrammarWithLanguageTool(text: string, language: string): Promise<{ score: number; findings: HighlightRange[]; summary: string }> {
-  const url = process.env.LANGUAGETOOL_BASE_URL ?? "https://api.languagetool.org/v2/check";
+const LANGUAGETOOL_URL = "https://api.languagetool.org/v2/check";
+
+async function reviewGrammarWithLanguageTool(text: string, language: string): Promise<{ score: number; findings: HighlightRange[]; summary: string; reachable: boolean }> {
   const payload = new URLSearchParams({ text, language, enabledOnly: "false" });
-  const data = (await fetchJson(url, {
+  const data = (await fetchJson(LANGUAGETOOL_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: payload
@@ -145,15 +142,16 @@ async function reviewGrammarWithLanguageTool(text: string, language: string): Pr
     start: match.offset,
     end: match.offset + match.length,
     category: "grammar",
-    severity: match.length > 12 ? "medium" : "low",
+    severity: (match.length > 12 ? "medium" : "low") as HighlightRange["severity"],
     label: match.message,
     suggestion: match.replacements?.[0]?.value ? `Suggested rewrite: ${match.replacements[0].value}` : "Review this sentence for grammar or style."
-  })) satisfies HighlightRange[];
+  }));
 
   return {
     score: clampScore(100 - Math.min(55, matches.length * 3.5)),
     findings,
-    summary: matches.length ? `LanguageTool flagged ${matches.length} issue(s).` : "LanguageTool did not flag any major grammar issues."
+    reachable: data !== null,
+    summary: data === null ? "LanguageTool was unreachable from your browser; grammar score reflects local checks only." : matches.length ? `LanguageTool flagged ${matches.length} issue(s).` : "LanguageTool did not flag any major grammar issues."
   };
 }
 
@@ -259,7 +257,15 @@ async function verifySources(text: string): Promise<{ score: number; findings: H
   };
 }
 
-function aiHeuristicScore(text: string): { score: number; confidence: number; evidence: string; findings: HighlightRange[] } {
+interface AiSignals {
+  score: number;
+  confidence: number;
+  evidence: string;
+  findings: HighlightRange[];
+  signals: ProviderResult[];
+}
+
+function aiHeuristicScore(text: string): AiSignals {
   const sentences = splitSentences(text);
   const words = tokenize(text);
   const paragraphs = splitParagraphs(text);
@@ -271,22 +277,60 @@ function aiHeuristicScore(text: string): { score: number; confidence: number; ev
   const burstiness = sentenceBurstiness(text);
   const transitionDensity = countMatches(text, /\b(?:furthermore|moreover|therefore|thus|consequently|in conclusion|it is important to note)\b/gi) / sentenceCount;
   const citationDensity = citationSupportDensity(text);
-  const score = clamp(
-    18 +
-      (1 - clamp(lexicalVariety / 0.72, 0, 1)) * 24 +
-      clamp(repetition * 140, 0, 22) +
-      clamp((1.15 - Math.min(burstiness, 1.15)) * 18, 0, 18) +
-      clamp(transitionDensity * 26, 0, 16) +
-      clamp((avgSentenceLength - 14) * 1.2, 0, 12) -
-      clamp(citationDensity * 4.5, 0, 12)
-  );
 
+  const varietyPoints = (1 - clamp(lexicalVariety / 0.72, 0, 1)) * 24;
+  const repetitionPoints = clamp(repetition * 140, 0, 22);
+  const rhythmPoints = clamp((1.15 - Math.min(burstiness, 1.15)) * 18, 0, 18);
+  const transitionPoints = clamp(transitionDensity * 26, 0, 16);
+  const lengthPoints = clamp((avgSentenceLength - 14) * 1.2, 0, 12);
+  const citationRelief = clamp(citationDensity * 4.5, 0, 12);
+
+  const score = clamp(18 + varietyPoints + repetitionPoints + rhythmPoints + transitionPoints + lengthPoints - citationRelief);
   const confidence = clamp(60 + (1 - Math.abs(0.66 - lexicalVariety)) * 16 + clamp((1 - Math.min(burstiness, 1)) * 10, 0, 10));
+
+  const signals: ProviderResult[] = [
+    {
+      provider: "Lexical variety",
+      score: clampScore(lexicalVariety * 100),
+      confidence: clampScore((varietyPoints / 24) * 100),
+      status: "heuristic",
+      evidence: `${Math.round(lexicalVariety * 100)}% of words are unique — low variety is a common AI-writing signal.`
+    },
+    {
+      provider: "Repeated phrasing",
+      score: clampScore(repetition * 100),
+      confidence: clampScore((repetitionPoints / 22) * 100),
+      status: "heuristic",
+      evidence: `${Math.round(repetition * 100)}% of 5-word phrases repeat elsewhere in the document.`
+    },
+    {
+      provider: "Sentence rhythm",
+      score: clampScore(clamp(burstiness, 0, 1.5) * (100 / 1.5)),
+      confidence: clampScore((rhythmPoints / 18) * 100),
+      status: "heuristic",
+      evidence: `Sentence-length variation (burstiness) is ${burstiness.toFixed(2)} — human writing tends to vary more.`
+    },
+    {
+      provider: "Transition density",
+      score: clampScore(clamp(transitionDensity, 0, 1) * 100),
+      confidence: clampScore((transitionPoints / 16) * 100),
+      status: "heuristic",
+      evidence: `${(transitionDensity * 100).toFixed(0)} formal transition words per 100 sentences.`
+    },
+    {
+      provider: "Sentence length",
+      score: clampScore(clamp(avgSentenceLength, 0, 40) * 2.5),
+      confidence: clampScore((lengthPoints / 12) * 100),
+      status: "heuristic",
+      evidence: `Average sentence length is ${avgSentenceLength.toFixed(1)} words.`
+    }
+  ];
 
   return {
     score,
     confidence,
-    evidence: `Heuristic AI signal from ${paragraphs.length} paragraph(s), ${sentenceCount} sentence(s), ${Math.round(lexicalVariety * 100)}% lexical variety, and ${Math.round(repetition * 100)}% repeated 5-gram overlap.`,
+    evidence: `Heuristic signal from ${paragraphs.length} paragraph(s), ${sentenceCount} sentence(s), ${Math.round(lexicalVariety * 100)}% lexical variety, and ${Math.round(repetition * 100)}% repeated 5-gram overlap.`,
+    signals,
     findings: buildHighlights(
       text,
       "ai-detection",
@@ -300,68 +344,13 @@ function aiHeuristicScore(text: string): { score: number; confidence: number; ev
   };
 }
 
-async function localProviderScore(provider: ProviderDescriptor, text: string): Promise<ProviderResult> {
+function aiDetection(text: string): { score: number; signals: ProviderResult[]; findings: HighlightRange[]; summary: string } {
   const heuristic = aiHeuristicScore(text);
   return {
-    provider: provider.name,
-    score: clampScore(heuristic.score * 0.96 + provider.weight * 4),
-    confidence: heuristic.confidence,
-    status: "fallback",
-    evidence: heuristic.evidence
-  };
-}
-
-async function callProvider(provider: ProviderDescriptor, text: string): Promise<ProviderResult> {
-  const url = process.env[provider.envUrl];
-  const apiKey = process.env[provider.envKey];
-
-  if (!url || !apiKey) {
-    return localProviderScore(provider, text);
-  }
-
-  try {
-    const response = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`
-      },
-      body: JSON.stringify({ text, language: "en" })
-    });
-
-    if (!response.ok) {
-      throw new Error(`Provider returned ${response.status}`);
-    }
-
-    const data = (await response.json()) as { score?: number; confidence?: number; evidence?: string };
-    return {
-      provider: provider.name,
-      score: clampScore(data.score ?? 0),
-      confidence: clampScore(data.confidence ?? 0),
-      status: "success",
-      evidence: data.evidence ?? "External provider response"
-    };
-  } catch (error) {
-    const fallback = await localProviderScore(provider, text);
-    return {
-      ...fallback,
-      status: "error",
-      evidence: `${fallback.evidence} External lookup failed: ${(error as Error).message}`
-    };
-  }
-}
-
-async function aiDetection(text: string): Promise<{ score: number; providers: ProviderResult[]; findings: HighlightRange[]; summary: string }> {
-  const providers = await Promise.all(aiProviders.map((provider) => callProvider(provider, text)));
-  const heuristic = aiHeuristicScore(text);
-  const weighted = providers.reduce((sum, provider, index) => sum + provider.score * aiProviders[index].weight, 0);
-  const score = clampScore(weighted * 0.72 + heuristic.score * 0.28);
-
-  return {
-    score,
-    providers,
+    score: heuristic.score,
+    signals: heuristic.signals,
     findings: heuristic.findings,
-    summary: `Combined AI-likelihood score is ${score} based on provider outputs and structural language signals.`
+    summary: `AI-likelihood score is ${heuristic.score}%, from local structural-language signals — this document was never sent anywhere for this check.`
   };
 }
 
@@ -487,7 +476,7 @@ async function citationAnalysis(text: string): Promise<{ score: number; citation
   };
 }
 
-async function writingAnalysis(text: string, language: string): Promise<{ score: number; findings: HighlightRange[]; summary: string; suggestions: string[] }> {
+async function writingAnalysis(text: string, language: string): Promise<{ score: number; findings: HighlightRange[]; summary: string; suggestions: string[]; languageToolReachable: boolean }> {
   const sentences = splitSentences(text);
   const words = tokenize(text);
   const longSentences = sentences.filter((sentence) => tokenize(sentence).length > 28);
@@ -505,6 +494,7 @@ async function writingAnalysis(text: string, language: string): Promise<{ score:
 
   return {
     score,
+    languageToolReachable: grammar.reachable,
     findings: [
       ...buildHighlights(text, "writing", [/\b(?:in order to|due to the fact that|at this point in time)\b/gi], "medium", "Use more direct academic phrasing."),
       ...buildHighlights(text, "writing", [/\b(?:really|very|just|quite)\b/gi], "low", "Trim filler modifiers for a sharper tone."),
@@ -607,14 +597,10 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisResult>
   const primaryText = sanitizeText(input.files[0]?.extractedText ?? "");
   const comparedTexts = input.files.slice(1).map((file) => sanitizeText(file.extractedText));
 
-  const [ai, citations, writing, sourceVerification, styleConsistency, quoteIntegrity] = await Promise.all([
-    aiDetection(primaryText),
-    citationAnalysis(primaryText),
-    writingAnalysis(primaryText, input.language),
-    verifySources(primaryText),
-    Promise.resolve(styleConsistencyAnalysis(primaryText)),
-    Promise.resolve(quoteIntegrityAnalysis(primaryText))
-  ]);
+  const ai = aiDetection(primaryText);
+  const [citations, writing, sourceVerification] = await Promise.all([citationAnalysis(primaryText), writingAnalysis(primaryText, input.language), verifySources(primaryText)]);
+  const styleConsistency = styleConsistencyAnalysis(primaryText);
+  const quoteIntegrity = quoteIntegrityAnalysis(primaryText);
 
   const plagiarism = plagiarismDetection(primaryText, comparedTexts);
   const readabilityScore = computeReadability(primaryText);
@@ -648,24 +634,23 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisResult>
     overallScore,
     integrityRating: overallScore >= 85 ? "Low risk" : overallScore >= 70 ? "Moderate" : overallScore >= 50 ? "Elevated" : "Critical",
     documentText: primaryText,
-    ai: { score: ai.score, summary: ai.summary, findings: ai.findings, details: { language: input.language }, providers: ai.providers },
-    plagiarism: { score: plagiarism.score, summary: plagiarism.summary, findings: plagiarism.findings, details: { sourceCount: plagiarism.sources.length }, sources: plagiarism.sources },
-    citations: { score: citations.score, summary: citations.summary, findings: citations.findings, details: { citationCount: citations.citations.length }, citations: citations.citations },
-    writing: { score: writing.score, summary: writing.summary, findings: writing.findings, details: { words: tokenize(primaryText).length } },
+    ai: { score: ai.score, summary: ai.summary, findings: ai.findings, providers: ai.signals },
+    plagiarism: { score: plagiarism.score, summary: plagiarism.summary, findings: plagiarism.findings, sources: plagiarism.sources },
+    citations: { score: citations.score, summary: citations.summary, findings: citations.findings, citations: citations.citations },
+    writing: { score: writing.score, summary: writing.summary, findings: writing.findings },
     sourceVerification: {
       score: sourceVerification.score,
       summary: sourceVerification.summary,
       findings: sourceVerification.findings,
-      details: { matchCount: sourceVerification.matches.length },
       matches: sourceVerification.matches
     },
-    styleConsistency: { score: styleConsistency.score, summary: styleConsistency.summary, findings: styleConsistency.findings, details: {} },
-    quoteIntegrity: { score: quoteIntegrity.score, summary: quoteIntegrity.summary, findings: quoteIntegrity.findings, details: {} },
-    readability: { score: readabilityScore, summary: `Flesch reading ease score is ${readabilityScore}.`, findings: [], details: { readabilityScore } },
-    tone: { score: tone.score, summary: tone.summary, findings: tone.findings, details: {} },
-    hallucination: { score: hallucination.score, summary: hallucination.summary, findings: hallucination.findings, details: {} },
-    paraphrasing: { score: paraphrasing.score, summary: paraphrasing.summary, findings: paraphrasing.findings, details: {} },
-    sourceComparison: { score: comparison.score, summary: comparison.summary, findings: comparison.findings, details: {}, comparedAgainst: comparison.comparedAgainst },
+    styleConsistency: { score: styleConsistency.score, summary: styleConsistency.summary, findings: styleConsistency.findings },
+    quoteIntegrity: { score: quoteIntegrity.score, summary: quoteIntegrity.summary, findings: quoteIntegrity.findings },
+    readability: { score: readabilityScore, summary: `Flesch reading ease score is ${readabilityScore}.`, findings: [] },
+    tone: { score: tone.score, summary: tone.summary, findings: tone.findings },
+    hallucination: { score: hallucination.score, summary: hallucination.summary, findings: hallucination.findings },
+    paraphrasing: { score: paraphrasing.score, summary: paraphrasing.summary, findings: paraphrasing.findings },
+    sourceComparison: { score: comparison.score, summary: comparison.summary, findings: comparison.findings, comparedAgainst: comparison.comparedAgainst },
     suggestions,
     modules: [
       { key: "ai", label: "AI risk", score: ai.score, summary: ai.summary, category: "risk" },
@@ -681,12 +666,11 @@ export async function runAnalysis(input: AnalysisInput): Promise<AnalysisResult>
       { key: "paraphrasing", label: "Paraphrase drift", score: paraphrasing.score, summary: paraphrasing.summary, category: "risk" }
     ],
     apiCoverage: [
-      { name: "Copyleaks", purpose: "AI detection", status: process.env.COPYLEAKS_BASE_URL ? "live" : "fallback", summary: process.env.COPYLEAKS_BASE_URL ? "External API enabled." : "Local heuristic fallback." },
-      { name: "GPTZero", purpose: "AI detection", status: process.env.GPTZERO_BASE_URL ? "live" : "fallback", summary: process.env.GPTZERO_BASE_URL ? "External API enabled." : "Local heuristic fallback." },
-      { name: "LanguageTool", purpose: "Grammar analysis", status: "live", summary: "Public grammar API queried for style and usage issues." },
-      { name: "Crossref", purpose: "Citation verification", status: "live", summary: "Public scholarly catalog queried for reference matches." },
-      { name: "OpenAlex", purpose: "Source verification", status: "live", summary: "Public work catalog queried for title matches." },
-      { name: "Semantic Scholar", purpose: "Source verification", status: "live", summary: "Public search API queried for supporting matches." }
+      { name: "Local heuristics", purpose: "AI-likelihood detection", status: "live", summary: "Runs entirely in your browser — structural language signals, no document text is sent anywhere for this check." },
+      { name: "LanguageTool", purpose: "Grammar analysis", status: writing.languageToolReachable ? "live" : "fallback", summary: writing.languageToolReachable ? "Public grammar API queried directly from your browser." : "Public API was unreachable from your browser; grammar score used local checks only." },
+      { name: "Crossref", purpose: "Citation verification", status: "live", summary: "Public scholarly catalog queried directly from your browser for reference matches." },
+      { name: "OpenAlex", purpose: "Source verification", status: "live", summary: "Public work catalog queried directly from your browser for title matches." },
+      { name: "Semantic Scholar", purpose: "Source verification", status: "live", summary: "Public search API queried directly from your browser for supporting matches." }
     ],
     charts: {
       labels: ["AI risk", "Plagiarism", "Citation health", "Source verification", "Style consistency", "Grammar", "Readability", "Tone", "Hallucination", "Paraphrasing"],
