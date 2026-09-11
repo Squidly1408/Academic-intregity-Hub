@@ -135,3 +135,115 @@ export function jaccardSimilarity(a: string, b: string): number {
   const union = new Set([...tokensA, ...tokensB]).size || 1;
   return intersection / union;
 }
+
+export interface TokenSpan {
+  word: string;
+  start: number;
+  end: number;
+}
+
+/** Like tokenize(), but keeps each word's character offset in the (sanitized) text so matches can be highlighted. */
+export function tokenizeWithOffsets(text: string): TokenSpan[] {
+  const sanitized = sanitizeText(text);
+  const spans: TokenSpan[] = [];
+  const regex = /[a-zA-Z0-9']+/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(sanitized)) !== null) {
+    spans.push({ word: match[0].toLowerCase(), start: match.index, end: match.index + match[0].length });
+  }
+  return spans;
+}
+
+/**
+ * Mean Segmental Type-Token Ratio: lexical variety measured over fixed-size
+ * windows and averaged, instead of over the whole document. Raw type-token
+ * ratio (uniqueRatio) drops mechanically as documents get longer — function
+ * words like "the" and "and" must repeat — so it penalizes long human essays
+ * for the same reason it "detects" repetitive AI text. Windowing removes
+ * most of that length bias.
+ */
+export function meanSegmentalTypeTokenRatio(words: string[], windowSize = 50): number {
+  if (!words.length) {
+    return 0;
+  }
+  if (words.length <= windowSize) {
+    return uniqueRatio(words);
+  }
+
+  const ratios: number[] = [];
+  for (let index = 0; index < words.length; index += windowSize) {
+    const window = words.slice(index, index + windowSize);
+    if (window.length >= Math.min(20, windowSize)) {
+      ratios.push(uniqueRatio(window));
+    }
+  }
+  return ratios.length ? ratios.reduce((sum, value) => sum + value, 0) / ratios.length : uniqueRatio(words);
+}
+
+export interface SpanMatch {
+  start: number;
+  end: number;
+  count: number;
+}
+
+function mergeSpans(spans: SpanMatch[]): SpanMatch[] {
+  if (!spans.length) return [];
+  const sorted = [...spans].sort((a, b) => a.start - b.start);
+  const merged: SpanMatch[] = [sorted[0]];
+  for (const span of sorted.slice(1)) {
+    const last = merged[merged.length - 1];
+    if (span.start <= last.end) {
+      last.end = Math.max(last.end, span.end);
+      last.count = Math.max(last.count, span.count);
+    } else {
+      merged.push({ ...span });
+    }
+  }
+  return merged;
+}
+
+/** Finds word n-gram spans in `text` that repeat at least `minRepeats` times, with real character offsets. */
+export function findRepeatedSpans(text: string, size: number, minRepeats = 2): SpanMatch[] {
+  const tokens = tokenizeWithOffsets(text);
+  if (tokens.length < size) return [];
+
+  const counts = new Map<string, number>();
+  for (let index = 0; index <= tokens.length - size; index += 1) {
+    const gram = tokens
+      .slice(index, index + size)
+      .map((token) => token.word)
+      .join(" ");
+    counts.set(gram, (counts.get(gram) ?? 0) + 1);
+  }
+
+  const spans: SpanMatch[] = [];
+  for (let index = 0; index <= tokens.length - size; index += 1) {
+    const slice = tokens.slice(index, index + size);
+    const gram = slice.map((token) => token.word).join(" ");
+    const count = counts.get(gram) ?? 0;
+    if (count >= minRepeats) {
+      spans.push({ start: slice[0].start, end: slice[slice.length - 1].end, count });
+    }
+  }
+
+  return mergeSpans(spans);
+}
+
+/** Finds word n-gram spans in `text` that also occur anywhere in `otherText`, with real character offsets into `text`. */
+export function findOverlapSpans(text: string, otherText: string, size: number): SpanMatch[] {
+  const tokens = tokenizeWithOffsets(text);
+  const otherWords = tokenize(otherText);
+  if (tokens.length < size || otherWords.length < size) return [];
+
+  const otherGrams = new Set(wordNgrams(otherWords, size));
+  const spans: SpanMatch[] = [];
+  for (let index = 0; index <= tokens.length - size; index += 1) {
+    const slice = tokens.slice(index, index + size);
+    const gram = slice.map((token) => token.word).join(" ");
+    if (otherGrams.has(gram)) {
+      spans.push({ start: slice[0].start, end: slice[slice.length - 1].end, count: 2 });
+    }
+  }
+
+  return mergeSpans(spans);
+}

@@ -3,14 +3,30 @@ import {
   chunkText,
   coefficientOfVariation,
   computeReadability,
+  findOverlapSpans,
+  findRepeatedSpans,
   jaccardSimilarity,
+  meanSegmentalTypeTokenRatio,
   sanitizeText,
   splitParagraphs,
   splitSentences,
   tokenize,
   uniqueRatio,
-  wordNgrams
+  wordNgrams,
+  type SpanMatch
 } from "./text";
+import { functionWordProfileDistance, sentenceOpenerRepetition, vocabularyCommonality } from "./stylometry";
+
+function spansToHighlights(spans: SpanMatch[], text: string, category: string, suggestion: string, severityFor: (count: number) => HighlightRange["severity"]): HighlightRange[] {
+  return spans.map((span) => ({
+    start: span.start,
+    end: span.end,
+    category,
+    severity: severityFor(span.count),
+    label: text.slice(span.start, span.end).slice(0, 64),
+    suggestion
+  }));
+}
 
 /**
  * Everything in this module runs entirely in the browser. There is no server:
@@ -265,82 +281,125 @@ interface AiSignals {
   signals: ProviderResult[];
 }
 
+/**
+ * Calibration notes: earlier versions of this heuristic scored raw
+ * type-token ratio (unique words / total words) directly, and also scored
+ * transition-word usage and sentence length as AI signals. Both are biased
+ * against exactly the kind of writing this tool is meant to evaluate:
+ *   - Type-token ratio drops mechanically as documents get longer (function
+ *     words like "the" and "and" must repeat), so any reasonably long human
+ *     essay scored as "low variety" for its length alone, not its content.
+ *   - Formal transitions ("furthermore", "therefore") and longer sentences
+ *     are normal, *expected* traits of good academic writing — penalizing
+ *     them pushes well-written human essays toward a higher AI score.
+ * This version measures lexical diversity over fixed-size windows (removing
+ * the length bias) and drops transitions/sentence-length as score drivers
+ * entirely, leaning on two signals with real empirical grounding: how
+ * uniform sentence rhythm is, and how much exact phrasing repeats.
+ */
+const CLICHE_MARKERS = /\b(?:it is important to note that|it is worth noting that|in conclusion|delve into|navigate the complexities of|in today's (?:world|society|fast-paced world)|plays a (?:crucial|vital|significant) role|underscore|testament to|boasts a|in the realm of)\b/gi;
+
 function aiHeuristicScore(text: string): AiSignals {
   const sentences = splitSentences(text);
   const words = tokenize(text);
   const paragraphs = splitParagraphs(text);
-  const wordCount = Math.max(1, words.length);
   const sentenceCount = Math.max(1, sentences.length);
-  const avgSentenceLength = wordCount / sentenceCount;
-  const lexicalVariety = uniqueRatio(words);
+  const msttr = meanSegmentalTypeTokenRatio(words, 50);
   const repetition = repeatedPhraseRatio(text);
   const burstiness = sentenceBurstiness(text);
-  const transitionDensity = countMatches(text, /\b(?:furthermore|moreover|therefore|thus|consequently|in conclusion|it is important to note)\b/gi) / sentenceCount;
   const citationDensity = citationSupportDensity(text);
+  const clicheCount = countMatches(text, CLICHE_MARKERS);
+  const clicheDensity = clicheCount / sentenceCount;
+  const commonality = vocabularyCommonality(words);
+  const functionWordDistance = functionWordProfileDistance(words);
+  const openerRepetition = sentenceOpenerRepetition(sentences.map((sentence) => tokenize(sentence).slice(0, 2).join(" ")));
 
-  const varietyPoints = (1 - clamp(lexicalVariety / 0.72, 0, 1)) * 24;
-  const repetitionPoints = clamp(repetition * 140, 0, 22);
-  const rhythmPoints = clamp((1.15 - Math.min(burstiness, 1.15)) * 18, 0, 18);
-  const transitionPoints = clamp(transitionDensity * 26, 0, 16);
-  const lengthPoints = clamp((avgSentenceLength - 14) * 1.2, 0, 12);
-  const citationRelief = clamp(citationDensity * 4.5, 0, 12);
+  const diversityPoints = clamp((1 - clamp(msttr / 0.62, 0, 1)) * 24, 0, 24);
+  const repetitionPoints = clamp(repetition * 130, 0, 20);
+  const rhythmPoints = clamp((1 - Math.min(burstiness, 1)) * 20, 0, 20);
+  const clichePoints = clamp(clicheDensity * 50, 0, 12);
+  const commonalityPoints = clamp((commonality - 0.55) * 60, 0, 10);
+  const functionWordPoints = clamp((0.12 - Math.min(functionWordDistance, 0.12)) * 100, 0, 8);
+  const openerPoints = clamp(openerRepetition * 60, 0, 10);
+  const citationRelief = clamp(citationDensity * 3, 0, 8);
 
-  const score = clamp(18 + varietyPoints + repetitionPoints + rhythmPoints + transitionPoints + lengthPoints - citationRelief);
-  const confidence = clamp(60 + (1 - Math.abs(0.66 - lexicalVariety)) * 16 + clamp((1 - Math.min(burstiness, 1)) * 10, 0, 10));
+  const score = clamp(4 + diversityPoints + repetitionPoints + rhythmPoints + clichePoints + commonalityPoints + functionWordPoints + openerPoints - citationRelief);
+  const confidence = clamp(55 + (1 - Math.abs(0.58 - msttr)) * 20 + clamp((1 - Math.min(burstiness, 1)) * 10, 0, 10));
 
   const signals: ProviderResult[] = [
     {
-      provider: "Lexical variety",
-      score: clampScore(lexicalVariety * 100),
-      confidence: clampScore((varietyPoints / 24) * 100),
+      provider: "Lexical diversity",
+      score: clampScore(msttr * 100),
+      confidence: clampScore((diversityPoints / 24) * 100),
       status: "heuristic",
-      evidence: `${Math.round(lexicalVariety * 100)}% of words are unique — low variety is a common AI-writing signal.`
+      evidence: `${Math.round(msttr * 100)}% unique words per 50-word window — measured per-window so document length doesn't skew it.`
     },
     {
       provider: "Repeated phrasing",
       score: clampScore(repetition * 100),
-      confidence: clampScore((repetitionPoints / 22) * 100),
+      confidence: clampScore((repetitionPoints / 20) * 100),
       status: "heuristic",
       evidence: `${Math.round(repetition * 100)}% of 5-word phrases repeat elsewhere in the document.`
     },
     {
       provider: "Sentence rhythm",
-      score: clampScore(clamp(burstiness, 0, 1.5) * (100 / 1.5)),
-      confidence: clampScore((rhythmPoints / 18) * 100),
+      score: clampScore((1 - Math.min(burstiness, 1)) * 100),
+      confidence: clampScore((rhythmPoints / 20) * 100),
       status: "heuristic",
-      evidence: `Sentence-length variation (burstiness) is ${burstiness.toFixed(2)} — human writing tends to vary more.`
+      evidence: `Sentence-length variation (burstiness) is ${burstiness.toFixed(2)} — very uniform sentence lengths are a common AI-writing trait; human writing tends to vary more.`
     },
     {
-      provider: "Transition density",
-      score: clampScore(clamp(transitionDensity, 0, 1) * 100),
-      confidence: clampScore((transitionPoints / 16) * 100),
+      provider: "Stock AI phrasing",
+      score: clampScore(Math.min(1, clicheDensity * 3) * 100),
+      confidence: clampScore((clichePoints / 12) * 100),
       status: "heuristic",
-      evidence: `${(transitionDensity * 100).toFixed(0)} formal transition words per 100 sentences.`
+      evidence: `${clicheCount} commonly-overused AI phrase(s) (e.g. "furthermore," "it is important to note") across ${sentenceCount} sentence(s) — a couple is normal; many clustered together is not.`
     },
     {
-      provider: "Sentence length",
-      score: clampScore(clamp(avgSentenceLength, 0, 40) * 2.5),
-      confidence: clampScore((lengthPoints / 12) * 100),
+      provider: "Vocabulary specificity",
+      score: clampScore(commonality * 100),
+      confidence: clampScore((commonalityPoints / 10) * 100),
       status: "heuristic",
-      evidence: `Average sentence length is ${avgSentenceLength.toFixed(1)} words.`
+      evidence: `${Math.round(commonality * 100)}% of the distinct words used are from a list of ~2,000 very common English words — writing that rarely reaches beyond generic vocabulary scores higher here.`
+    },
+    {
+      provider: "Function-word profile",
+      score: clampScore((1 - Math.min(functionWordDistance, 0.12) / 0.12) * 100),
+      confidence: clampScore((functionWordPoints / 8) * 100),
+      status: "heuristic",
+      evidence: `How closely words like "the," "of," and "is" appear at generic average rates, versus an idiosyncratic personal mix — an approximate signal, weighted lightly.`
+    },
+    {
+      provider: "Sentence-opener variety",
+      score: clampScore(openerRepetition * 100),
+      confidence: clampScore((openerPoints / 10) * 100),
+      status: "heuristic",
+      evidence: `${Math.round(openerRepetition * 100)}% of sentences share an opening two-word phrase with another sentence — templated writing tends to reuse openers.`
     }
   ];
+
+  const clichePhrases = buildHighlights(
+    text,
+    "ai-detection",
+    [CLICHE_MARKERS],
+    "low",
+    "This is a commonly overused AI-writing phrase on its own — not proof of anything, but worth rephrasing for specificity."
+  );
+
+  const repeatedSpans = spansToHighlights(
+    findRepeatedSpans(text, 5, 2),
+    text,
+    "ai-detection",
+    "This exact 5+ word phrase repeats elsewhere in the document — repeated stock phrasing is one of the stronger AI-writing signals.",
+    (count) => (count >= 4 ? "high" : count >= 3 ? "medium" : "low")
+  );
 
   return {
     score,
     confidence,
-    evidence: `Heuristic signal from ${paragraphs.length} paragraph(s), ${sentenceCount} sentence(s), ${Math.round(lexicalVariety * 100)}% lexical variety, and ${Math.round(repetition * 100)}% repeated 5-gram overlap.`,
+    evidence: `Heuristic signal from ${paragraphs.length} paragraph(s), ${sentenceCount} sentence(s), ${Math.round(msttr * 100)}% windowed lexical diversity, and ${Math.round(repetition * 100)}% repeated 5-gram overlap. This is a local estimate, not a verified detection.`,
     signals,
-    findings: buildHighlights(
-      text,
-      "ai-detection",
-      [
-        /\b(?:furthermore|moreover|in conclusion|it is important to note|more importantly)\b/gi,
-        /\b(?:utilize|facilitate|underscore|leverage|seamless|robust|comprehensive)\b/gi
-      ],
-      score > 70 ? "high" : score > 45 ? "medium" : "low",
-      "Use more specific claims, vary sentence length, and reduce repeated transitions."
-    )
+    findings: [...repeatedSpans, ...clichePhrases]
   };
 }
 
@@ -384,21 +443,29 @@ function plagiarismDetection(text: string, comparedTexts: string[]): { score: nu
     ];
   }
 
+  // Highlight the actual repeated/overlapping text, not just words that happen to relate to the topic of copying.
+  const internalRepeats = spansToHighlights(
+    findRepeatedSpans(text, 6, 2),
+    text,
+    "plagiarism",
+    "This exact 6+ word phrase repeats elsewhere in the document — make sure repetition here is a deliberate stylistic choice, not copy-paste padding.",
+    (count) => (count >= 4 ? "high" : count >= 3 ? "medium" : "low")
+  );
+
+  const crossDocumentOverlaps = comparedTexts.flatMap((sourceText, index) =>
+    spansToHighlights(
+      findOverlapSpans(text, sourceText, 6),
+      text,
+      "plagiarism",
+      `This exact phrase also appears in Compared document ${index + 1} — verify it is quoted and cited, not copied.`,
+      () => "high"
+    )
+  );
+
   return {
     score: clampScore(100 - highest),
     sources,
-    findings: buildHighlights(
-      text,
-      "plagiarism",
-      [
-        /\b(?:according to|as noted by|research shows|the study found|prior research indicates)\b/gi,
-        /\b(?:copy|copied|duplicate|replicated)\b/gi
-      ],
-      highest > 75 ? "high" : highest > 50 ? "medium" : "low",
-      comparedTexts.length
-        ? "Review the matching passages and verify citation support."
-        : "Look for repeated passages or patchwork phrasing within the document."
-    ),
+    findings: comparedTexts.length ? crossDocumentOverlaps : internalRepeats,
     summary: comparedTexts.length
       ? highest > 70
         ? "Strong overlap detected with comparison sources."
